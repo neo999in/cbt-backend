@@ -51,7 +51,7 @@ Avoid:
     res.json({ reply });
   } catch (err) {
     console.error(err.response?.data || err.message);
-    res.status(500).json({ error: 'Failed to get Gemini response.' });
+    res.status(500).json({ error: 'Failed to get InnerAI response.' });
   }
 });
 
