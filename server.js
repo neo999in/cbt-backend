@@ -11,51 +11,56 @@ app.use(express.json());
 
 // -------------------- AI Chat Endpoint --------------------
 app.post('/api/chat', async (req, res) => {
-  const { messages, language = 'en' } = req.body; // default to English
+  try {
+    const { messages, language = 'en' } = req.body; // default to English
 
-  const chatHistory = [
-    {
-      role: 'user',
-      parts: [
-        {
-          text: `
+    console.log("Language received:", language);
+
+    // Build chat history with strict language instruction
+    const chatHistory = [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: `
 You are a kind and supportive AI coach named InnerAI.
 
-You must:
-1. Respond in ${language} language.
-2. ONLY give CBT-based responses.
-3. Include:
-   - (1) Reframing of the user's negative thought
-   - (2) A mental resilience drill
-   - (3) A positive affirmation
-4. DO NOT use asterisks, markdown, or special symbols for emphasis.
-5. Use clear, plain, friendly language in sentence form.
+Always respond ONLY in ${language} language.
 
-Avoid:
-- Using stars or underscores for formatting
-- Emojis or decorative characters
+If the user sends a message in another language, translate and respond ONLY in ${language}.
+
+Your task:
+1. ONLY give CBT-based responses.
+2. Each response MUST include these three sections:
+   - Reframe of the user's negative thought.
+   - A mental resilience drill.
+   - A positive affirmation.
+3. DO NOT use asterisks, markdown, or special symbols for emphasis.
+4. Use clear, plain, friendly language in sentence form.
+
+Important: NEVER reply in any other language except ${language}.
 `
-        }
-      ]
-    },
-    ...messages
-  ];
+          }
+        ]
+      },
+      ...messages
+    ];
 
-  try {
+    // Call Gemini API
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${process.env.GEMINI_API_KEY}`,
       { contents: chatHistory },
       { headers: { 'Content-Type': 'application/json' } }
     );
 
-    const reply = response.data.candidates?.[0]?.content?.parts?.[0]?.text || 'No reply';
+    const reply = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No reply generated.';
+
     res.json({ reply });
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    console.error("AI Chat Error:", err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to get InnerAI response.' });
   }
 });
-
 // -------------------- Reframe Generator Endpoint --------------------
 app.post('/api/reframe', async (req, res) => {
   const { emotion, belief } = req.body;
