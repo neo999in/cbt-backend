@@ -103,40 +103,61 @@ app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 // --------------------Story Generator Endpoint --------------------
 
 app.post('/api/story', async (req, res) => {
-  const { challenge } = req.body;
+  try {
+    const { emotion, belief } = req.body;
 
-  if (!challenge) {
-    return res.status(400).json({ error: 'Challenge description is required.' });
-  }
+    // Validate input
+    if (!emotion || !belief) {
+      return res.status(400).json({ error: 'Emotion and challenge description are required.' });
+    }
 
-  const prompt = `
-You are a supportive AI therapist who uses storytelling to help people reflect on their challenges.
+    // Refined prompt for better story generation
+    const prompt = `
+You are a compassionate AI therapist who uses storytelling to help people process emotions and challenges.
 
-The user has shared this challenge: "${challenge}".
+The user feels "${emotion}" and shared this challenge: "${belief}".
 
 Your task:
-- Create a short, calming story or metaphor about resilience and growth.
-- The story should help the user feel understood and empowered.
+- Write a short, calming story or metaphor that reflects resilience, hope, and emotional growth.
+- The story should feel personal and relatable to the user's emotion.
+- Use plain language, no decorative symbols or emojis.
 - Keep the story under 150 words.
-- Do not use emojis or decorative symbols.
+- Make it soothing and empowering, ending on a positive note.
 `;
 
-  try {
+    // Call Google Gemini API
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${process.env.GEMINI_API_KEY}`,
       {
         contents: [
-          { role: 'user', parts: [{ text: prompt }] }
+          {
+            role: 'user',
+            parts: [{ text: prompt }]
+          }
         ]
       },
-      { headers: { 'Content-Type': 'application/json' } }
+      {
+        headers: { 'Content-Type': 'application/json' }
+      }
     );
 
-    const story = response.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'No story generated';
-    res.json({ story });
+    // Extract story text safely
+    const story = response.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+    if (!story || story.length === 0) {
+      return res.status(500).json({ error: 'AI did not generate a story. Please try again.' });
+    }
+
+    res.status(200).json({ story });
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({ error: 'Failed to generate story.' });
+    console.error('Error generating story:', err.response?.data || err.message);
+
+    // Handle API-specific errors gracefully
+    if (err.response?.status === 429) {
+      return res.status(429).json({ error: 'Rate limit exceeded. Please try again later.' });
+    }
+
+    res.status(500).json({ error: 'Failed to generate story. Please try again.' });
   }
 });
 
