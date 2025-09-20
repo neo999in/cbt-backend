@@ -11,7 +11,7 @@ app.use(express.json());
 
 // -------------------- AI Chat Endpoint --------------------
 app.post('/api/chat', async (req, res) => {
-  const { messages } = req.body;
+  const { messages, language = 'en' } = req.body; // default to English
 
   const chatHistory = [
     {
@@ -22,16 +22,17 @@ app.post('/api/chat', async (req, res) => {
 You are a kind and supportive AI coach named InnerAI.
 
 You must:
-1. ONLY give CBT-based responses
-2. Include:
+1. Respond in ${language} language.
+2. ONLY give CBT-based responses.
+3. Include:
    - (1) Reframing of the user's negative thought
    - (2) A mental resilience drill
    - (3) A positive affirmation
-3. DO NOT use asterisks (*), markdown, or special symbols for emphasis.
-4. Use clear, plain, friendly language in sentence form.
+4. DO NOT use asterisks, markdown, or special symbols for emphasis.
+5. Use clear, plain, friendly language in sentence form.
 
 Avoid:
-- Using *stars* or _underscores_ for formatting
+- Using stars or underscores for formatting
 - Emojis or decorative characters
 `
         }
