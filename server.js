@@ -2,6 +2,7 @@ import express from 'express';
 import axios from 'axios';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import multer from 'multer';
 
 dotenv.config();
 
@@ -9,164 +10,203 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// -------------------- AI Chat Endpoint --------------------
-app.post('/api/chat', async (req, res) => {
-  try {
-    const { messages, language = 'en' } = req.body; // default to English
-
-    console.log("Language received:", language);
-
-    // Build chat history with strict language instruction
-    const chatHistory = [
-      {
-        role: 'user',
-        parts: [
-          {
-            text: `
-You are a kind and supportive AI named Saathi.
-
-Always respond ONLY in ${language} language.
-
-If the user sends a message in another language, translate and respond ONLY in ${language}.
-
-Your task:
-You are a compassionate and confidential mental wellness companion for young adults in India. 
-Your role is to provide empathetic support, helpful coping strategies, and culturally sensitive guidance on mental health topics. 
-You are not a replacement for professional mental health care, but you can provide information, encouragement, and referrals to professional resources if needed. 
-Always prioritize empathy, active listening, and confidentiality.
-
-- Always respond with empathy and warmth.  
-- Avoid medical diagnoses or prescribing medication.  
-- Offer coping strategies, stress management techniques, or supportive exercises.  
-- Provide culturally relevant examples and sensitive language.  
-- Encourage seeking professional help if necessary, providing accessible resources (e.g., local helplines or online counseling services).  
-- Keep responses concise, understandable, and encouraging.  
-- Avoid judgmental or dismissive language.
-
-
-DO NOT use asterisks, markdown, or special symbols for emphasis.
-Use clear, plain, friendly language in sentence form.
-
-Important: NEVER reply in any other language except ${language}.
-`
-          }
-        ]
-      },
-      ...messages
-    ];
-
-    // Call Gemini API
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      { contents: chatHistory },
-      { headers: { 'Content-Type': 'application/json' } }
-    );
-
-    const reply = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No reply generated.';
-
-    res.json({ reply });
-  } catch (err) {
-    console.error("AI Chat Error:", err.response?.data || err.message);
-    res.status(500).json({ error: 'Failed to get InnerAI response.' });
-  }
-});
-// -------------------- Reframe Generator Endpoint --------------------
-app.post('/api/reframe', async (req, res) => {
-  const { emotion, belief } = req.body;
-
-  if (!emotion || !belief) {
-    return res.status(400).json({ error: 'Emotion and belief are required.' });
-  }
-
-  const prompt = `
-You are a CBT-based AI coach.
-
-The user feels "${emotion}" because they believe: "${belief}".
-
-Your task:
-- Provide ONLY one short, positive reframe of the belief.
-- The reframe must be clear, encouraging, and easy to remember.
-- Do NOT include drills, affirmations, or extra text.
-- Keep it under 25 words.
-- No emojis or decorative symbols.
-`;
-
-  try {
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      { contents: [{ role: 'user', parts: [{ text: prompt }] }] },
-      { headers: { 'Content-Type': 'application/json' } }
-    );
-
-    const reframe = response.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'No reframe available';
-    res.json({ reframe });
-  } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({ error: 'Failed to generate reframe.' });
-  }
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// A quick health endpoint to wake up Render instances safely.
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'awake', timestamp: new Date() });
+});
 
-// --------------------Story Generator Endpoint --------------------
-
-app.post('/api/story', async (req, res) => {
+// -------------------- Attendance Analysis Endpoint --------------------
+app.post('/api/analyze-attendance', (req, res, next) => {
+  // Catch Multer errors gracefully so we don't crash and break CORS
+  upload.single('report')(req, res, function (err) {
+    if (err) {
+      console.error("Multer Error:", err);
+      return res.status(400).json({ success: false, error: `File Upload Error: ${err.message}` });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
-    const { emotion, belief } = req.body;
-
-    // Validate input
-    if (!emotion || !belief) {
-      return res.status(400).json({ error: 'Emotion and challenge description are required.' });
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No PDF file provided under the "report" field.' });
     }
 
-    // Refined prompt for better story generation
+    if (req.file.mimetype !== 'application/pdf' && !req.file.originalname.toLowerCase().endsWith('.pdf')) {
+      return res.status(400).json({ success: false, error: 'Only PDF files are accepted.' });
+    }
+
+    console.log(`Received PDF: ${req.file.originalname} (${req.file.size} bytes)`);
+
     const prompt = `
-You are a compassionate AI therapist who uses storytelling to help people process emotions and challenges.
+You are a precise attendance data extractor. Accuracy is critical — a student's academic standing depends on this.
 
-The user feels "${emotion}" and shared this challenge: "${belief}".
+I have attached a college attendance PDF report. It contains rows with: Date, Subject, and a status column marked as one of:
+- "P" = Present (student attended)
+- "A" = Absent (student did NOT attend)
 
-Your task:
-- Write a short, calming story or metaphor that reflects resilience, hope, and emotional growth.
-- The story should feel personal and relatable to the user's emotion.
-- Use plain language, no decorative symbols or emojis.
-- Keep the story under 150 words.
-- Make it soothing and empowering, ending on a positive note.
+STEP-BY-STEP INSTRUCTIONS:
+1. First, extract metadata from the report header: student full name, semester, program, academic year, report start date, and report end date.
+2. Identify every unique subject name in the report.
+3. For EACH subject, go through EVERY row belonging to that subject and:
+   - Count "P" entries → this is "attended"
+   - Count "A" entries → add to total but NOT to attended
+   - SKIP any "Cancelled" entries entirely — do NOT count them in attended OR total
+   - "total" = number of "P" entries + number of "A" entries (excluding Cancelled)
+4. Double-check your counts by verifying: attended + absent = total for each subject.
+
+Return ONLY a JSON object matching this exact schema:
+{
+  "studentName": "Full Name",
+  "semester": "Semester III",
+  "program": "B.Tech Computer Science",
+  "academicYear": "2025-2026",
+  "reportStartDate": "01 Jan 2025",
+  "reportEndDate": "30 Apr 2025",
+  "subjects": [
+    {
+      "name": "Subject Name",
+      "attended": 10,
+      "total": 12
+    }
+  ]
+}
+
+RULES:
+- "attended" must NEVER be greater than "total".
+- "total" must NEVER include Cancelled classes.
+- If a metadata field is not found, use an empty string "".
+- Do NOT guess or approximate. Count every single row precisely.
 `;
 
-    // Call Google Gemini API
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: prompt }]
-          }
-        ]
-      },
-      {
-        headers: { 'Content-Type': 'application/json' }
+    const pdfPart = {
+      inlineData: {
+        mimeType: req.file.mimetype,
+        data: req.file.buffer.toString("base64")
       }
-    );
+    };
 
-    // Extract story text safely
-    const story = response.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    const callGemini = async (modelName) => {
+      return axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        {
+          contents: [{ role: 'user', parts: [{ text: prompt }, pdfPart] }],
+          generationConfig: { responseMimeType: "application/json" }
+        },
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    };
 
-    if (!story || story.length === 0) {
-      return res.status(500).json({ error: 'AI did not generate a story. Please try again.' });
-    }
+    const response = await callGemini('gemini-3.1-flash-lite');
 
-    res.status(200).json({ story });
+    const insights = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || '{"subjects":[]}';
+
+    res.json({ success: true, insights });
   } catch (err) {
-    console.error('Error generating story:', err.response?.data || err.message);
-
-    // Handle API-specific errors gracefully
-    if (err.response?.status === 429) {
-      return res.status(429).json({ error: 'Rate limit exceeded. Please try again later.' });
-    }
-
-    res.status(500).json({ error: 'Failed to generate story. Please try again.' });
+    const apiErrorMessage = err.response?.data?.error?.message;
+    const msg = (apiErrorMessage && apiErrorMessage.includes('demand')) 
+      ? 'The AI model is overloaded due to high demand. Please try again in a few moments.' 
+      : 'Failed to analyze attendance report. See backend logs.';
+    res.status(500).json({ success: false, error: msg });
   }
 });
 
+// -------------------- Setup Data Extraction Endpoint (Android) --------------------
+app.post('/api/extract-setup-data', (req, res, next) => {
+  upload.single('report')(req, res, function (err) {
+    if (err) {
+      console.error("Multer Error:", err);
+      return res.status(400).json({ success: false, error: `File Upload Error: ${err.message}` });
+    }
+    next();
+  });
+}, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: 'No PDF file provided under the "report" field.' });
+    if (req.file.mimetype !== 'application/pdf' && !req.file.originalname.toLowerCase().endsWith('.pdf')) return res.status(400).json({ success: false, error: 'Only PDF files are accepted.' });
+
+    console.log(`Received PDF for Setup: ${req.file.originalname} (${req.file.size} bytes)`);
+
+    const prompt = `
+You are a precise data extractor. I have attached a college attendance PDF report.
+STEP-BY-STEP INSTRUCTIONS:
+1. Extract metadata from the report header: student full name, program (course), academic year.
+2. Determine the semester as a number if possible, or string.
+3. Identify every unique subject name in the report.
+4. Carefully analyze the dates and subjects throughout the report to reconstruct the recurring weekly timetable. Determine which subjects occur on which day of the week (1 = Monday, 2 = Tuesday, ..., 6 = Saturday). Order the subjects chronologically as they were taught that day.
+5. Extract every individual attendance record listed in the report. For each entry, provide the date (in YYYY-MM-DD format), the subject name, and the status ("P" for Present, "A" for Absent). Ignore any "Cancelled" classes.
+
+DO NOT EXTRACT OR RETURN REPORT START DATE OR END DATE.
+
+Return ONLY a JSON object matching exactly this schema:
+{
+  "studentName": "Full Name",
+  "course": "B.Tech Computer Science",
+  "year": "2025-2026",
+  "semester": "Semester III",
+  "subjects": [
+    "Subject 1",
+    "Subject 2"
+  ],
+  "timetable": [
+    {
+      "dayOfWeek": 1,
+      "subjects": ["Subject 1", "Subject 2"]
+    }
+  ],
+  "attendanceRecords": [
+    {
+      "date": "2025-01-20",
+      "subject": "Subject 1",
+      "status": "P"
+    }
+  ]
+}
+
+RULES:
+- If a metadata field is not found, use an empty string "".
+- If you cannot deduce the timetable securely, provide an empty array [].
+- Provide ONLY the JSON. No markdown formatting.
+`;
+
+    const pdfPart = {
+      inlineData: { mimeType: req.file.mimetype, data: req.file.buffer.toString("base64") }
+    };
+
+    const callGemini = async (modelName) => {
+      return axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        {
+          contents: [{ role: 'user', parts: [{ text: prompt }, pdfPart] }],
+          generationConfig: { responseMimeType: "application/json" }
+        },
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    };
+
+    const response = await callGemini('gemini-3.1-flash-lite');
+
+    const data = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error("Extraction Error (Full Details):", err.response ? JSON.stringify(err.response.data, null, 2) : err.message);
+    const apiErrorMessage = err.response?.data?.error?.message;
+    const msg = (apiErrorMessage && apiErrorMessage.includes('demand')) 
+      ? 'The AI model is overloaded due to high demand. Please try again in a few moments.' 
+      : 'Failed to extract setup data.';
+    res.status(500).json({ success: false, error: msg });
+  }
+});
+
+// Global Error Handler to guarantee JSON responses (ensures CORS works on crashes)
+app.use((err, req, res, next) => {
+  console.error("Critical Server Error:", err);
+  res.status(500).json({ success: false, error: `Critical server error: ${err.message}` });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
